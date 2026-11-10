@@ -60,7 +60,7 @@ Todos viven en un único archivo, `src/job_cobertura.py`, para que el despliegue
 ### ADR-001 — AWS Glue (Spark serverless) como motor de procesamiento
 
 - **Contexto:** 12 M de órdenes en < 24 h, laboratorio con sesiones de 4 h y créditos limitados; el curso evalúa procesamiento distribuido.
-- **Decisión:** AWS Glue 5.0 (Spark 3.5, Python 3.11), workers G.1X, número de workers como parámetro.
+- **Decisión:** AWS Glue 5.1 (Spark 3.5.6, Python 3.11; versión predeterminada para trabajos nuevos), workers G.1X, número de workers como parámetro.
 - **Consecuencias:** sin clúster que administrar ni apagar; se paga por segundo de ejecución (DPU-hora); integración directa con S3, Data Catalog y CloudWatch. En contra: el costo por DPU-hora es mayor que EMR en cargas continuas, y hay un tiempo de arranque fijo por ejecución.
 - **Alternativas descartadas:**
   - *Amazon EMR:* misma lógica Spark, pero hay que crear, dimensionar y apagar el clúster; más riesgo operativo en sesiones de 4 h. Sería el camino si la carga fuera continua y mucho mayor.
@@ -116,12 +116,12 @@ Todos viven en un único archivo, `src/job_cobertura.py`, para que el despliegue
 
 - Spark reparte las filas entre los workers; el procesamiento por fila no depende de las demás filas (salvo la lectura de los catálogos, que se distribuyen a todos). El costo crece de forma aproximadamente lineal con el volumen, y el tiempo baja al agregar workers.
 - 12 M en 24 h equivale a unas 139 órdenes por segundo de rendimiento mínimo requerido.
-- **Evidencia a recoger:** `duration_seconds` y workers usados en la ejecución de 1,2 M y en la de 12 M. Con eso se calculan órdenes por segundo por worker y cuántos workers harían falta para otros volúmenes.
+- **Evidencia a recoger:** workers usados, tiempo de procesamiento (`duration_seconds` de la línea `METRICAS`) y tiempo total de la ejecución en la consola de Glue (incluye el arranque), para 1,2 M y para 12 M. Con eso se calculan órdenes por segundo por worker y cuántos workers harían falta para otros volúmenes.
 
-| Ejecución | Registros | Workers (G.1X) | `duration_seconds` | Órdenes/s |
-|---|---|---|---|---|
-| 1,2 M | 1 200 000 | _pendiente_ | _pendiente_ | _pendiente_ |
-| 12 M | 12 000 000 | _pendiente_ | _pendiente_ | _pendiente_ |
+| Ejecución | Registros | Workers (G.1X) | Procesamiento (s) | Tiempo total en consola (s) | Órdenes/s (sobre tiempo total) |
+|---|---|---|---|---|---|
+| 1,2 M | 1 200 000 | _pendiente_ | _pendiente_ | _pendiente_ | _pendiente_ |
+| 12 M | 12 000 000 | _pendiente_ | _pendiente_ | _pendiente_ | _pendiente_ |
 
 ## 6. Costo
 
@@ -149,7 +149,7 @@ El primer diseño se hizo con el marco AI-DLC. Al consolidarlo se corrigieron es
 
 | # | Antes | Ahora | Motivo |
 |---|---|---|---|
-| 1 | Glue 4.0 con Python 3.11 | Glue 5.0 (Python 3.11, Spark 3.5) | Glue 4.0 usa Python 3.10; la combinación anterior no existe. |
+| 1 | Glue 4.0 con Python 3.11 | Glue 5.1 (Python 3.11, Spark 3.5.6) | Glue 4.0 usa Python 3.10; la combinación anterior no existe. La 5.1 es la versión predeterminada vigente (la 6.0 usa Python 3.13 y Spark 4.1). |
 | 2 | Columna `nombre_servicio` del catálogo | Columna `servicio` | Es el nombre real en el CSV. |
 | 3 | Subir el script antes de crear el stack | Crear el stack → subir archivos → ejecutar | El bucket lo crea el propio stack. |
 | 4 | Particionar por `fecha_solicitud` (fecha y hora) | Particionar por `fecha` (solo fecha) | Por fecha y hora habría una partición casi por registro. |

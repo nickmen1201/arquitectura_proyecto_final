@@ -11,8 +11,9 @@ Un bucket creado por la plantilla (nombre generado por CloudFormation, publicado
 | `raw/` | Archivos CSV de órdenes (`COIL_dataset_glosas_salud_1_2M.csv`, muestra dañada) | Operador (subida) |
 | `catalogs/` | `COIL_catalogo_servicios_cubiertos.csv`, `COIL_catalogo_perfiles_cobertura.csv` | Operador (subida) |
 | `scripts/` | `job_cobertura.py` | Operador (subida) |
-| `curated/ordenes_clasificadas/fecha=YYYY-MM-DD/` | Parquet con las decisiones | Glue Job |
-| `quarantine/ordenes_cuarentena/` | Parquet con los errores | Glue Job |
+| `curated/ordenes_clasificadas/fecha=YYYY-MM-DD/` | Parquet con las decisiones (ejecución de 1,2 M y muestra dañada; tabla de Athena) | Glue Job |
+| `quarantine/ordenes_cuarentena/` | Parquet con los errores (tabla de Athena) | Glue Job |
+| `curated/escala_12m/`, `quarantine/escala_12m/` | Salidas de la prueba de 12 M; carpeta aparte para no borrar la evidencia de 1,2 M. No se registran en Athena: la evidencia es la línea `METRICAS` | Glue Job |
 | `athena-results/` | Resultados de consultas | Athena |
 | `temp/` | Archivos temporales de Glue | Glue |
 
@@ -27,9 +28,9 @@ Definidos en `DefaultArguments` de la plantilla; se pueden sobrescribir al ejecu
 | `--catalog_profiles_path` | sí | `s3://<bucket>/catalogs/COIL_catalogo_perfiles_cobertura.csv` | Catálogo de perfiles |
 | `--output_path` | sí | `s3://<bucket>/curated/ordenes_clasificadas/` | Destino de las decisiones |
 | `--quarantine_path` | sí | `s3://<bucket>/quarantine/ordenes_cuarentena/` | Destino de los errores |
-| `--factor_replicacion` | sí | `1` | `10` para la prueba de 12 M |
+| `--factor_replicacion` | sí | `1` | `10` para la prueba de 12 M (junto con `--output_path` y `--quarantine_path` apuntando a `escala_12m/`) |
 
-Configuración del job en la plantilla: `GlueVersion` (parámetro, por defecto `5.0`), `WorkerType` `G.1X`, `NumberOfWorkers` (parámetro), `Timeout` en minutos (parámetro), métricas de job y log continuo activados.
+Configuración del job en la plantilla: `GlueVersion` (parámetro, por defecto `5.1`), `WorkerType` `G.1X`, `NumberOfWorkers` (parámetro), `Timeout` en minutos (parámetro), métricas de job y log continuo activados.
 
 **Orden de despliegue:** crear el stack → subir script, catálogos y CSV a sus prefijos → ejecutar el workflow o el job. Glue no exige que el script exista al crear el job, solo al ejecutarlo.
 

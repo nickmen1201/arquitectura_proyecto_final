@@ -47,7 +47,7 @@ Como el dataset real no trae errores, la cuarentena se demuestra con un **archiv
 | **FR5** Valor cubierto | `valor_cubierto = valor_procedimiento × porcentaje / 100` (0 si no cubre). | Correcto para el 100 % de los registros. |
 | **FR6** Privacidad | `paciente_hash = SHA-256( upper(trim(DNO)) + "\|" + upper(trim(SeguroSocial)) )` en hexadecimal. Nombre, DNO y seguro social **nunca** se escriben en la salida. | Hash de 64 caracteres, estable entre ejecuciones; no existen columnas con PII. |
 | **FR7** Salida trazable | Resultado en Parquet en la zona `curated/`, particionado por `fecha`, con los 14 campos de [contratos.md](contratos.md#3-esquema-de-salida-curated). | `records_output + records_quarantined = records_input`. |
-| **FR8** Escala | 12 M de órdenes en menos de 24 h. Se **demuestra con una ejecución real de 12 M** (dataset replicado 10 veces dentro del job con el parámetro `factor_replicacion`), además de la ejecución de 1,2 M. | Tiempos medidos de ambas ejecuciones en CloudWatch; la de 12 M < 86 400 s. |
+| **FR8** Escala | 12 M de órdenes en menos de 24 h. Se **demuestra con una ejecución real de 12 M** (dataset replicado 10 veces dentro del job con el parámetro `factor_replicacion`), además de la ejecución de 1,2 M. Cada ejecución escribe en su propia carpeta de salida para no borrar la evidencia de la otra. | Para ambas ejecuciones se registran dos tiempos: el de procesamiento (línea `METRICAS`) y el **tiempo total** que muestra la consola de Glue (incluye el arranque). El tiempo total de la de 12 M < 86 400 s. |
 | **FR9** Infraestructura como código | Toda la infraestructura se crea con una plantilla de CloudFormation que recibe el ARN del `LabRole` como parámetro y **no crea roles IAM**. | Crear el stack desde la consola con la plantilla deja el job listo para ejecutar, sin pasos manuales adicionales salvo subir archivos a S3. |
 | **FR10** Orquestación | Un Glue Workflow encadena la ejecución: disparador bajo demanda para la demo y disparador diario programado (desactivado por defecto) que representa la operación real del lote. | Ejecutar el workflow lanza el job y queda registrado en el historial del workflow. |
 | **FR11** Consulta de trazabilidad | Las salidas `curated/` y `quarantine/` quedan registradas como tablas en el Glue Data Catalog y se consultan con Athena. | Una consulta por `id_solicitud` devuelve la decisión, la regla aplicada, el `run_id` y el `timestamp_proceso`. |
@@ -58,7 +58,7 @@ Como el dataset real no trae errores, la cuarentena se demuestra con un **archiv
 |---|---|
 | **NFR1** Trazabilidad | Cada orden de entrada termina exactamente en `curated/` o en `quarantine/`, con `run_id` y `timestamp_proceso`. |
 | **NFR2** Privacidad | Ningún dato personal (nombre, DNO, seguro social) en salidas, cuarentena ni logs. |
-| **NFR3** Idempotencia | Dos ejecuciones con la misma entrada producen las mismas decisiones; solo cambian `run_id` y `timestamp_proceso`. Cada ejecución sobrescribe las particiones que procesa. |
+| **NFR3** Idempotencia | Dos ejecuciones con la misma entrada producen las mismas decisiones; solo cambian `run_id` y `timestamp_proceso`. Repetir una ejecución sobre la misma carpeta de salida la sobrescribe. |
 | **NFR4** Observabilidad | Al terminar, el job escribe en CloudWatch una línea `METRICAS {json}` con `run_id`, `records_input`, `records_output`, `records_quarantined_parseo`, `records_quarantined_perfil`, `duration_seconds`, `workers`, `worker_type`. |
 | **NFR5** Seguridad | Sin credenciales, ARNs ni nombres de bucket en el código o la plantilla; todo llega por parámetros. Se usa el `LabRole` del laboratorio. Bucket con cifrado SSE-S3 y acceso público bloqueado. |
 | **NFR6** Costo | Servicios serverless con pago por uso (Glue, S3, Athena); nada queda encendido entre ejecuciones. Las cifras de costo se toman de la AWS Pricing Calculator o de la consola del laboratorio; **nunca se inventan**. |
@@ -70,14 +70,13 @@ Actores: **Operador** (despliega y ejecuta), **Analista** (revisa resultados), *
 | ID | Historia | Criterios clave (Given/When/Then resumidos) |
 |---|---|---|
 | **US1.1** | Como Operador, quiero crear toda la infraestructura con la plantilla, para no configurar nada a mano. | El stack llega a `CREATE_COMPLETE`; no hay recursos `AWS::IAM::Role`; el job queda listo para ejecutar. |
-| **US1.2** | Como Operador, quiero borrar y recrear el stack, para recuperarme de un despliegue fallido. | Al vaciar el bucket y borrar el stack no quedan recursos; al recrearlo todo vuelve a funcionar. |
 | **US2.1** | Como Operador, quiero ejecutar la clasificación por lotes indicando la ruta del archivo. | El job termina en `SUCCEEDED` con `records_input = 1200000` y deja Parquet legible en `curated/`. |
 | **US2.2** | Como Analista, quiero que cada orden tenga los 14 campos de salida, para verificar la decisión sin ver datos personales. | Esquema exacto de 14 columnas; `paciente_hash` de 64 caracteres; `valor_cubierto` y `regla_aplicada` correctos; decisiones idénticas entre dos ejecuciones. |
 | **US2.3** | Como Analista, quiero que la clasificación siga exactamente los catálogos. | Las 3 × 20 combinaciones cubiertas dan el porcentaje del perfil; los servicios no cubiertos dan 0. |
 | **US3.1** | Como Analista, quiero que los registros inválidos vayan a cuarentena sin detener el lote. | Con la muestra dañada: los errores solo están en `quarantine/`, con su motivo; la suma cuadra con la entrada; el job termina en `SUCCEEDED`. |
 | **US3.2** | Como Operador, quiero ver las métricas de la ejecución en CloudWatch. | La línea `METRICAS` aparece con todos sus campos y su `run_id` coincide con el del Parquet. |
 | **US3.3** | Como Analista, quiero consultar con Athena por qué se decidió una orden. | `SELECT ... WHERE id_solicitud = 'CHV-0000004'` devuelve la decisión, la regla, el `run_id` y la hora de proceso. |
-| **US4.1** | Como Operador, quiero demostrar que 12 M de órdenes se procesan en menos de 24 h. | Ejecución real con `factor_replicacion = 10`: `records_input = 12000000` y `duration_seconds < 86400`; el documento compara 1,2 M vs 12 M y los workers usados. |
+| **US4.1** | Como Operador, quiero demostrar que 12 M de órdenes se procesan en menos de 24 h. | Ejecución real con `factor_replicacion = 10`: `records_input = 12000000` y tiempo total en la consola de Glue < 86 400 s; el documento compara 1,2 M vs 12 M y los workers usados. |
 | **US5.1** | Como Comité, quiero un documento de diseño técnico con diagrama, justificación, lógica, escalado y costo. | Diagrama de servicios y flujo; Glue justificado frente a EMR, Lambda y Athena; tabla de costo con fuente de cada cifra. |
 | **US5.2** | Como Comité, quiero código, pruebas y evidencia de ejecución. | Pruebas de clasificación, cuarentena y hash con ≥ 80 % de cobertura de la lógica; capturas de Glue, CloudWatch, S3 y Athena; ninguna credencial en el repositorio. |
 
@@ -92,12 +91,11 @@ Actores: **Operador** (despliega y ejecuta), **Analista** (revisa resultados), *
 
 - Los catálogos no cambian durante una ejecución.
 - El `LabRole` tiene permisos sobre Glue, S3, Athena y CloudWatch Logs. **Verificar en el laboratorio.**
-- El laboratorio ofrece **Glue 5.0** (Python 3.11, Spark 3.5). **Verificar**; si solo hay Glue 4.0, se cambia un parámetro de la plantilla.
+- El laboratorio ofrece **Glue 5.1** (Python 3.11, Spark 3.5.6). **Verificar**; si no, se usa 5.0 (mismo Python) cambiando un parámetro de la plantilla.
 - Las sesiones del laboratorio duran 4 horas y los créditos son limitados: cada ejecución se planifica para hacerse una sola vez.
 
 ## 8. Prácticas de trabajo
 
-- Python 3.11 (runtime de Glue) · Black (`line-length = 88`) · Ruff · `pytest` + `pytest-cov`.
+- Python 3.11 en Glue (el código evita sintaxis exclusiva de 3.12 para que las pruebas corran con el Python 3.12 local) · `pytest` + `pytest-cov`.
 - Pruebas: la lógica de negocio es Python puro y se prueba localmente sin Spark ni AWS (≥ 80 % de cobertura de líneas sobre esos módulos). La parte que usa Spark se valida con la ejecución real en Glue, que es la evidencia.
-- Git con commits sobre `main`.
-- Despliegue desde la consola del laboratorio usando la plantilla de CloudFormation; sin crear recursos a mano.
+- Infraestructura: se crea subiendo la plantilla de CloudFormation desde la consola del laboratorio. Lo único manual es subir archivos a S3 y lanzar las ejecuciones.
