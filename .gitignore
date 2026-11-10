@@ -27,4 +27,4 @@ aidlc/diagnostics/
 # END AI-DLC:gitignore
 
 *.csv
-/data/*.csv
+data/
