@@ -1,0 +1,308 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Proyecto COIL - Clasificacion batch de ordenes medicas. Data lake S3 por zonas,
+  clave de seudonimizacion en Secrets Manager, Glue Job (Spark), workflows por
+  escenario, tablas del Data Catalog con partition projection y workgroup de Athena.
+  No crea roles IAM: usa el rol existente del laboratorio.
+
+Parameters:
+  NombreRol:
+    Type: String
+    Default: LabRole
+    Description: Nombre del rol IAM existente que usara el Glue Job (en el laboratorio, LabRole).
+  VersionGlue:
+    Type: String
+    Default: "5.1"
+    AllowedValues: ["5.1", "5.0"]
+    Description: Version de AWS Glue (ambas con Python 3.11).
+  NumeroWorkers:
+    Type: Number
+    Default: 4
+    MinValue: 2
+    MaxValue: 20
+    Description: Workers G.1X del job (1 DPU cada uno).
+  TimeoutMinutos:
+    Type: Number
+    Default: 120
+    MinValue: 10
+    MaxValue: 1440
+    Description: Tiempo maximo por ejecucion del job.
+  NombreBaseDatos:
+    Type: String
+    Default: coil_cobertura
+    AllowedPattern: "^[a-z][a-z0-9_]{2,60}$"
+    Description: Base de datos del Glue Data Catalog (minusculas, numeros y guion bajo).
+
+Resources:
+  # ------------------------------------------------------------- almacenamiento
+  BucketDatos:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: limpiar-resultados-athena-y-temporales
+            Status: Enabled
+            Prefix: athena-results/
+            ExpirationInDays: 7
+          - Id: limpiar-temporales-glue
+            Status: Enabled
+            Prefix: temp/
+            ExpirationInDays: 7
+
+  # ------------------------------------------------- clave de seudonimizacion
+  SecretoClave:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Clave HMAC para seudonimizar pacientes (generada al crear el stack; nadie la escribe).
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: clave
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  # --------------------------------------------------------------- catalogo
+  BaseDatos:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: !Ref NombreBaseDatos
+        Description: Resultados de la clasificacion de ordenes medicas
+
+  TablaClasificadas:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref BaseDatos
+      TableInput:
+        Name: ordenes_clasificadas
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          EXTERNAL: "TRUE"
+          projection.enabled: "true"
+          projection.ejecucion.type: enum
+          projection.ejecucion.values: esqueleto,muestra_danada,completo_1_2m,escala_12m,diaria
+          projection.fecha.type: date
+          projection.fecha.format: yyyy-MM-dd
+          projection.fecha.range: 2026-01-01,NOW
+          projection.fecha.interval: "1"
+          projection.fecha.interval.unit: DAYS
+        PartitionKeys:
+          - { Name: ejecucion, Type: string }
+          - { Name: fecha, Type: string }
+        StorageDescriptor:
+          Location: !Sub s3://${BucketDatos}/curated/ordenes_clasificadas/
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - { Name: id_solicitud, Type: string }
+            - { Name: paciente_hash, Type: string }
+            - { Name: cubre, Type: string }
+            - { Name: porcentaje_cobertura, Type: int }
+            - { Name: perfil_cobertura, Type: string }
+            - { Name: servicio_solicitado, Type: string }
+            - { Name: entidad_emisora, Type: string }
+            - { Name: medio_emisor, Type: string }
+            - { Name: valor_procedimiento, Type: double }
+            - { Name: valor_cubierto, Type: double }
+            - { Name: regla_aplicada, Type: string }
+            - { Name: run_id, Type: string }
+            - { Name: timestamp_proceso, Type: timestamp }
+
+  TablaCuarentena:
+    Type: AWS::Glue::Table
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref BaseDatos
+      TableInput:
+        Name: ordenes_cuarentena
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          classification: parquet
+          EXTERNAL: "TRUE"
+          projection.enabled: "true"
+          projection.ejecucion.type: enum
+          projection.ejecucion.values: esqueleto,muestra_danada,completo_1_2m,escala_12m,diaria
+        PartitionKeys:
+          - { Name: ejecucion, Type: string }
+        StorageDescriptor:
+          Location: !Sub s3://${BucketDatos}/quarantine/ordenes_cuarentena/
+          InputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe
+          Columns:
+            - { Name: id_solicitud, Type: string }
+            - { Name: cubre, Type: string }
+            - { Name: detalle, Type: string }
+            - { Name: fecha_solicitud, Type: string }
+            - { Name: run_id, Type: string }
+            - { Name: timestamp_proceso, Type: timestamp }
+
+  GrupoAthena:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Sub ${AWS::StackName}-consultas
+      Description: Consultas de trazabilidad del proyecto COIL
+      RecursiveDeleteOption: true
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: true
+        ResultConfiguration:
+          OutputLocation: !Sub s3://${BucketDatos}/athena-results/
+
+  # ------------------------------------------------------------- procesamiento
+  JobClasificacion:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: !Sub ${AWS::StackName}-clasificacion
+      Description: Clasifica ordenes medicas (cobertura y porcentaje) con trazabilidad
+      Role: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${NombreRol}
+      GlueVersion: !Ref VersionGlue
+      WorkerType: G.1X
+      NumberOfWorkers: !Ref NumeroWorkers
+      Timeout: !Ref TimeoutMinutos
+      MaxRetries: 0
+      ExecutionProperty:
+        MaxConcurrentRuns: 1
+      Command:
+        Name: glueetl
+        PythonVersion: "3"
+        ScriptLocation: !Sub s3://${BucketDatos}/scripts/job_cobertura.py
+      DefaultArguments:
+        "--job-language": python
+        "--enable-metrics": "true"
+        "--TempDir": !Sub s3://${BucketDatos}/temp/
+        "--input_path": !Sub s3://${BucketDatos}/raw/COIL_dataset_glosas_salud_1_2M.csv
+        "--catalog_services_path": !Sub s3://${BucketDatos}/catalogs/COIL_catalogo_servicios_cubiertos.csv
+        "--catalog_profiles_path": !Sub s3://${BucketDatos}/catalogs/COIL_catalogo_perfiles_cobertura.csv
+        "--output_path": !Sub s3://${BucketDatos}/curated/ordenes_clasificadas/
+        "--quarantine_path": !Sub s3://${BucketDatos}/quarantine/ordenes_cuarentena/
+        "--secret_id": !Ref SecretoClave
+        "--factor_replicacion": "1"
+        "--etiqueta_ejecucion": completo_1_2m
+
+  # ------------------------------------------------------------- orquestacion
+  # Un workflow por escenario: cada workflow tiene un unico disparador de inicio.
+  FlujoEsqueleto:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Name: !Sub ${AWS::StackName}-1-esqueleto
+      Description: Esqueleto funcional (~1000 ordenes)
+  InicioEsqueleto:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub ${AWS::StackName}-inicio-esqueleto
+      Type: ON_DEMAND
+      WorkflowName: !Ref FlujoEsqueleto
+      Actions:
+        - JobName: !Ref JobClasificacion
+          Arguments:
+            "--input_path": !Sub s3://${BucketDatos}/raw/muestras/muestra_esqueleto_1000.csv
+            "--etiqueta_ejecucion": esqueleto
+            "--factor_replicacion": "1"
+
+  FlujoMuestraDanada:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Name: !Sub ${AWS::StackName}-2-muestra-danada
+      Description: Muestra con glosas danadas a proposito (demuestra la cuarentena)
+  InicioMuestraDanada:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub ${AWS::StackName}-inicio-muestra-danada
+      Type: ON_DEMAND
+      WorkflowName: !Ref FlujoMuestraDanada
+      Actions:
+        - JobName: !Ref JobClasificacion
+          Arguments:
+            "--input_path": !Sub s3://${BucketDatos}/raw/muestras/muestra_danada.csv
+            "--etiqueta_ejecucion": muestra_danada
+            "--factor_replicacion": "1"
+
+  FlujoCompleto:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Name: !Sub ${AWS::StackName}-3-completo-1-2m
+      Description: Dataset completo de 1,2 millones de ordenes
+  InicioCompleto:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub ${AWS::StackName}-inicio-completo-1-2m
+      Type: ON_DEMAND
+      WorkflowName: !Ref FlujoCompleto
+      Actions:
+        - JobName: !Ref JobClasificacion
+          Arguments:
+            "--input_path": !Sub s3://${BucketDatos}/raw/COIL_dataset_glosas_salud_1_2M.csv
+            "--etiqueta_ejecucion": completo_1_2m
+            "--factor_replicacion": "1"
+
+  FlujoEscala:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Name: !Sub ${AWS::StackName}-4-escala-12m
+      Description: Prueba de escala, dataset replicado 10 veces (12 millones)
+  InicioEscala:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub ${AWS::StackName}-inicio-escala-12m
+      Type: ON_DEMAND
+      WorkflowName: !Ref FlujoEscala
+      Actions:
+        - JobName: !Ref JobClasificacion
+          Arguments:
+            "--input_path": !Sub s3://${BucketDatos}/raw/COIL_dataset_glosas_salud_1_2M.csv
+            "--etiqueta_ejecucion": escala_12m
+            "--factor_replicacion": "10"
+
+  FlujoDiario:
+    Type: AWS::Glue::Workflow
+    Properties:
+      Name: !Sub ${AWS::StackName}-operacion-diaria
+      Description: Operacion real diaria (disparador programado, creado DESACTIVADO para no gastar creditos)
+  InicioDiario:
+    Type: AWS::Glue::Trigger
+    Properties:
+      Name: !Sub ${AWS::StackName}-inicio-diario
+      Type: SCHEDULED
+      Schedule: cron(0 5 * * ? *)
+      StartOnCreation: false
+      WorkflowName: !Ref FlujoDiario
+      Actions:
+        - JobName: !Ref JobClasificacion
+          Arguments:
+            "--etiqueta_ejecucion": diaria
+            "--factor_replicacion": "1"
+
+Outputs:
+  BucketDatos:
+    Description: Bucket del data lake (aqui se suben scripts, catalogos y datos)
+    Value: !Ref BucketDatos
+  NombreJob:
+    Description: Glue Job de clasificacion
+    Value: !Ref JobClasificacion
+  SecretoArn:
+    Description: ARN del secreto con la clave de seudonimizacion (no contiene la clave)
+    Value: !Ref SecretoClave
+  BaseDatosCatalogo:
+    Description: Base de datos del Glue Data Catalog para Athena
+    Value: !Ref BaseDatos
+  GrupoTrabajoAthena:
+    Description: Workgroup de Athena a seleccionar en el editor de consultas
+    Value: !Ref GrupoAthena
+  RutaScript:
+    Description: Ruta exacta donde debe subirse src/job_cobertura.py
+    Value: !Sub s3://${BucketDatos}/scripts/job_cobertura.py

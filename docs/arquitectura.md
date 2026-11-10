@@ -15,7 +15,7 @@ flowchart LR
         ATH["athena-results/"]
     end
 
-    WF["Glue Workflow<br/>disparador bajo demanda<br/>+ diario (desactivado)"] --> JOB
+    WF["Glue Workflows<br/>1 por escenario (bajo demanda)<br/>+ operación diaria (programado, desactivado)"] --> JOB
     JOB["Glue Job (Spark)<br/>parsear → validar → clasificar<br/>→ hash → escribir"]
     SM["AWS Secrets Manager<br/>clave de seudonimización<br/>(generada por CloudFormation)"] -.->|"se lee 1 vez por ejecución"| JOB
     RAW --> JOB
@@ -30,7 +30,7 @@ flowchart LR
     AT --> ATH
 ```
 
-Texto equivalente: el Workflow de Glue lanza el Job. El Job lee una vez la clave de seudonimización desde Secrets Manager, las órdenes de `raw/` y los catálogos de `catalogs/`, procesa en paralelo en los workers de Spark y escribe las decisiones en `curated/` (Parquet particionado por fecha) y los errores en `quarantine/`. Al terminar deja sus métricas en CloudWatch. Las dos salidas están registradas como tablas en el Glue Data Catalog y se consultan con Athena.
+Texto equivalente: cada Workflow de Glue lanza el Job con los argumentos de su escenario. El Job lee una vez la clave de seudonimización desde Secrets Manager, las órdenes de `raw/` y los catálogos de `catalogs/`, procesa en paralelo en los workers de Spark y escribe las decisiones en `curated/` (Parquet particionado por escenario y fecha) y los errores en `quarantine/` (particionado por escenario). Al terminar deja sus métricas en CloudWatch. Las dos salidas están registradas como tablas en el Glue Data Catalog y se consultan con Athena.
 
 Toda la infraestructura (bucket, secreto con la clave, job, workflow, disparadores, base de datos y tablas del catálogo, workgroup de Athena) la crea **una sola plantilla de CloudFormation**.
 
@@ -80,7 +80,7 @@ Todos viven en un único archivo, `src/job_cobertura.py`, para que el despliegue
 ### ADR-002 — S3 como data lake por zonas + Data Catalog + Athena para consultar
 
 - **Contexto:** la Opción 1 exige "estrategia robusta de almacenamiento"; la trazabilidad debe poder verificarse orden por orden.
-- **Decisión:** un bucket con zonas por prefijo (`raw/`, `catalogs/`, `scripts/`, `curated/`, `quarantine/`, `athena-results/`). Salidas en Parquet (columnar, comprimido con Snappy), `curated/` particionado por `fecha`. Tablas definidas en la plantilla con *partition projection*, sin necesidad de un crawler. Consultas con Athena.
+- **Decisión:** un bucket con zonas por prefijo (`raw/`, `catalogs/`, `scripts/`, `curated/`, `quarantine/`, `athena-results/`). Salidas en Parquet (columnar, comprimido con Snappy), `curated/` particionado por `ejecucion` (escenario) y `fecha`, y `quarantine/` por `ejecucion`, para que ningún escenario borre la evidencia de otro. Tablas definidas en la plantilla con *partition projection* (enumeración de escenarios y rango de fechas), sin necesidad de un crawler. Consultas con Athena.
 - **Consecuencias:** un solo destino barato y durable; Parquet reduce lo que Athena escanea; consultar una decisión es una línea de SQL. Las tablas existen desde que se crea el stack.
 - **Alternativas descartadas:** *DynamoDB* (escritura registro a registro de 12 M es más lenta y cara, y el uso es analítico, no transaccional); *CSV como salida* (más pesado y más caro de consultar); *Glue Crawler* (costo y un paso más, innecesario si el esquema es fijo y conocido); *varios buckets* (más recursos que administrar sin beneficio de seguridad real en un laboratorio con un único rol).
 
@@ -100,7 +100,7 @@ Todos viven en un único archivo, `src/job_cobertura.py`, para que el despliegue
 
 ### ADR-005 — CloudFormation como infraestructura como código
 
-- **Decisión:** plantilla YAML con parámetro obligatorio `LabRoleArn`; sin recursos `AWS::IAM::Role`.
+- **Decisión:** plantilla YAML ([infra/plantilla.yaml](../infra/plantilla.yaml)) con parámetro `NombreRol` (por defecto `LabRole`); el ARN se arma con la cuenta y la partición del propio stack, sin escribir ningún ARN. Sin recursos `AWS::IAM::Role`. Validada con `cfn-lint`.
 - **Consecuencias:** reproducible y legible por el comité; se puede crear desde la consola sin instalar nada.
 - **Alternativas descartadas:** *CDK* (agrega Node.js y genera CloudFormation de todos modos); *Terraform* (requiere estado externo y no está en el laboratorio).
 
@@ -116,10 +116,10 @@ Todos viven en un único archivo, `src/job_cobertura.py`, para que el despliegue
 - **Consecuencias:** ningún registro recibe una decisión equivocada en silencio; un catálogo incompleto se detecta en la cuarentena.
 - **Alternativa descartada:** *asumir 0 %*, que ocultaría el error y negaría cobertura a alguien con un perfil legítimo no registrado.
 
-### ADR-008 — Orquestación con Glue Workflow
+### ADR-008 — Orquestación con Glue Workflows
 
 - **Contexto:** la Opción 1 exige orquestación; en operación real el lote llega cada día.
-- **Decisión:** un Glue Workflow con un disparador bajo demanda (demo) y uno programado diario (creado pero desactivado, para no consumir créditos).
+- **Decisión:** un Glue Workflow por escenario de prueba, cada uno con su disparador bajo demanda y sus argumentos (Glue admite un único disparador de inicio por workflow), y un workflow de operación diaria con disparador programado (05:00 UTC), creado desactivado para no consumir créditos.
 - **Consecuencias:** historial de ejecuciones por workflow; extensible a más pasos (por ejemplo, validar el archivo antes de procesarlo).
 - **Alternativas descartadas:** *Step Functions* (más flexible pero más piezas para un flujo de un solo paso); *EventBridge + Lambda* (más código propio); *ejecutar el job a mano* (no es orquestación).
 

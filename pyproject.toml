@@ -1,0 +1,21 @@
+[project]
+name = "coil-cobertura-ordenes"
+version = "1.0.0"
+description = "Clasificación batch de órdenes médicas en AWS Glue (proyecto COIL)"
+requires-python = ">=3.11"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov>=5"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "scripts"]
+addopts = "-q"
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80

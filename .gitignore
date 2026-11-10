@@ -14,3 +14,6 @@ htmlcov/
 
 # Credenciales locales
 .env
+
+# Guía personal del laboratorio (no se versiona)
+GUIA_LABORATORIO.md
