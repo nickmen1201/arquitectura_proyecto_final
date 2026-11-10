@@ -28,11 +28,25 @@ Definidos en `DefaultArguments` de la plantilla; se pueden sobrescribir al ejecu
 | `--catalog_profiles_path` | sí | `s3://<bucket>/catalogs/COIL_catalogo_perfiles_cobertura.csv` | Catálogo de perfiles |
 | `--output_path` | sí | `s3://<bucket>/curated/ordenes_clasificadas/` | Destino de las decisiones |
 | `--quarantine_path` | sí | `s3://<bucket>/quarantine/ordenes_cuarentena/` | Destino de los errores |
+| `--secret_id` | sí | ARN del secreto creado por la plantilla (`!Ref` del recurso) | Identificador del secreto con la clave de seudonimización. **Es el ARN, no la clave.** |
 | `--factor_replicacion` | sí | `1` | `10` para la prueba de 12 M (junto con `--output_path` y `--quarantine_path` apuntando a `escala_12m/`) |
 
 Configuración del job en la plantilla: `GlueVersion` (parámetro, por defecto `5.1`), `WorkerType` `G.1X`, `NumberOfWorkers` (parámetro), `Timeout` en minutos (parámetro), métricas de job y log continuo activados.
 
-**Orden de despliegue:** crear el stack → subir script, catálogos y CSV a sus prefijos → ejecutar el workflow o el job. Glue no exige que el script exista al crear el job, solo al ejecutarlo.
+## 2.1 Secreto de seudonimización
+
+| Aspecto | Contrato |
+|---|---|
+| Recurso | `AWS::SecretsManager::Secret`, sin nombre fijo (lo genera CloudFormation, para evitar choques si el stack se recrea) |
+| Contenido | JSON `{"clave": "<64 caracteres alfanuméricos aleatorios>"}`, generado con `GenerateSecretString` (`SecretStringTemplate: '{}'`, `GenerateStringKey: clave`, `PasswordLength: 64`, `ExcludePunctuation: true`). Nadie escribe la clave. |
+| Lectura | El job llama a `secretsmanager:GetSecretValue` **una vez**, en el driver, antes de leer datos. Extrae `clave`, verifica que exista y tenga al menos 32 caracteres, y la usa como bytes UTF-8. |
+| Fallo | Si el secreto no existe, no hay permiso o falta `clave`: el job termina con error y mensaje claro, **sin procesar nada**. No hay respaldo con SHA-256 sin clave. |
+| Registros | La clave nunca se imprime ni aparece en `METRICAS`, excepciones ni salidas. |
+| Vida útil | Mientras el stack exista, la clave no cambia y los `paciente_hash` son estables. Borrar el stack programa el borrado del secreto; un stack nuevo genera una clave distinta. |
+
+## 2.2 Orden de despliegue
+
+Crear el stack (eso también genera el secreto) → subir script, catálogos y CSV a sus prefijos → ejecutar el workflow o el job. Glue no exige que el script exista al crear el job, solo al ejecutarlo.
 
 ## 3. Esquema de salida (`curated/`)
 
@@ -41,7 +55,7 @@ Parquet comprimido con Snappy, particionado por `fecha`. Tabla de Athena: `orden
 | # | Columna | Tipo | Nulo | Origen / regla |
 |---|---|---|---|---|
 | 1 | `id_solicitud` | string | no | CSV |
-| 2 | `paciente_hash` | string | no | SHA-256 normalizado (FR6), 64 caracteres hexadecimales |
+| 2 | `paciente_hash` | string | no | HMAC-SHA-256 con la clave del secreto sobre DNO y seguro social normalizados (FR6); 64 caracteres hexadecimales en minúscula |
 | 3 | `cubre` | string | no | `SI` / `NO` |
 | 4 | `porcentaje_cobertura` | int | no | `100`, `50`, `25` o `0` |
 | 5 | `perfil_cobertura` | string | no | glosa |
