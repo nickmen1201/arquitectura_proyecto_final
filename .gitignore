@@ -17,3 +17,13 @@ htmlcov/
 
 # Guía personal del laboratorio (no se versiona)
 GUIA_LABORATORIO.md
+
+# Screenshots para el informe final
+ss/
+# Archivos auxiliares de LaTeX
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk

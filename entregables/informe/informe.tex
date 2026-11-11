@@ -1,0 +1,176 @@
+\documentclass[10pt,twocolumn,letterpaper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish,es-noshorthands,es-tabla,es-nodecimaldot]{babel}
+\usepackage{mathptmx}
+\usepackage[hmargin=1.7cm,vmargin=1.5cm,columnsep=0.6cm]{geometry}
+\usepackage{microtype}
+\usepackage{booktabs,tabularx,array}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit}
+\usepackage[font=small,labelfont=bf,skip=3pt]{caption}
+\usepackage{titlesec}
+\usepackage[hidelinks]{hyperref}
+
+\titleformat{\section}{\normalfont\bfseries\large}{\thesection.}{0.4em}{}
+\titlespacing*{\section}{0pt}{5pt}{2pt}
+\raggedbottom
+\setlength{\textfloatsep}{6pt}
+\setlength{\floatsep}{6pt}
+\setlength{\dbltextfloatsep}{8pt}
+
+% Valores que se completan con la ejecución en el laboratorio de AWS.
+\newcommand{\pend}[1]{\textcolor{red}{[#1]}}
+
+\title{\vspace{-1.3cm}\Large\bfseries Diseño e implementación de una solución distribuida en la nube para el procesamiento masivo de órdenes médicas en un sistema público de salud}
+\author{%
+  Nicolás Meneses \quad Nicolás Mendoza\\[1pt]
+  \small Universidad Pontificia Bolivariana\\
+  \small Proyecto COIL: Big Data y Metodología de la Investigación. Docente: Leonardo Betancur Agudelo}
+\date{\vspace{-1cm}}
+
+\begin{document}
+
+\twocolumn[
+\maketitle
+\begin{center}
+\begin{minipage}{0.92\textwidth}
+\small
+\textbf{Resumen.} Un sistema público de salud debe decidir, para cada orden médica, si el Estado cubre el servicio y qué porcentaje reconoce (100\,\%, 50\,\% o 25\,\% según el perfil del usuario), con trazabilidad de cada decisión y una meta de 12 millones de órdenes en menos de 24 horas. Se implementó una solución por lotes, distribuida y \emph{serverless} en AWS: AWS Glue (Apache Spark) clasifica las órdenes; Amazon S3 guarda entradas y salidas en Parquet; Amazon Athena consulta la trazabilidad; AWS Secrets Manager custodia la clave con la que se seudonimiza al paciente (HMAC-SHA-256), y AWS CloudFormation aprovisiona todo. Sobre 1\,200\,000 órdenes, la lógica reproduce exactamente la referencia (780\,000 cubiertas y 420\,000 no cubiertas), conserva la igualdad entre entradas y salidas y no expone datos personales; las pruebas automatizadas cubren el 99,60\,\% de la lógica.
+
+\smallskip
+\textbf{Palabras clave:} big data, procesamiento por lotes, Apache Spark, computación serverless, salud pública, trazabilidad.
+\end{minipage}
+\end{center}
+\vspace{0.2cm}
+]
+
+\begin{table*}[t]
+\centering
+\caption{Resultados frente a las cifras objetivo. La verificación local ejecuta la misma lógica en un solo proceso, sin Spark.}
+\label{tab:res}
+\footnotesize
+\renewcommand{\arraystretch}{1.05}
+\begin{tabularx}{\textwidth}{>{\raggedright\arraybackslash}p{3.3cm} >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X >{\raggedright\arraybackslash}X}
+\toprule
+\textbf{Indicador} & \textbf{Cifra objetivo} & \textbf{Verificación local} & \textbf{Ejecución en AWS} \\
+\midrule
+Tiempo total, 12 M (H1) & \(<\) 86\,400 s (24 h) & No aplica & \pend{s} con \pend{W} workers G.1X \\
+Rendimiento & \(\geq\) 139 órdenes/s & 38\,521 órdenes/s (1,2 M en 31,2 s) & 1,2 M: \pend{órdenes/s}; 12 M: \pend{órdenes/s} \\
+Exactitud (H2) & 1,2 M: 780\,000 SI y 420\,000 NO; 12 M: 7\,800\,000 SI y 4\,200\,000 NO & 1,2 M: 780\,000 SI y 420\,000 NO (100\,\%) & 1,2 M: \pend{SI}, \pend{NO}; 12 M: \pend{SI}, \pend{NO} \\
+Trazabilidad (H3) & Entradas = resultados + cuarentena & 1\,200\,000 = 1\,200\,000 + 0 & 12 M: \pend{entradas} = \pend{resultados} + \pend{cuarentena} \\
+Muestra dañada (34 órdenes) & 22 resultados; 12 en cuarentena (10 de formato, 2 de perfil) & 22; 12 (10 y 2) & \pend{resultados}; \pend{cuarentena} \\
+Privacidad & 0 columnas con datos personales; clave fuera del código & 0 de 14 columnas; ninguna clave real en el código ni en la plantilla & Valor del secreto ausente de plantilla y registros: \pend{sí/no} \\
+Calidad del software & Cobertura de pruebas \(\geq\) 80\,\% & 99,60\,\% (93 pruebas) & No aplica \\
+Costo, ejecución de 12 M & Reportado con la fuente de cada precio & No aplica & \pend{USD}; \pend{USD} por orden \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+\section{Planteamiento del problema}
+Un gobierno desea automatizar el análisis de órdenes médicas para decidir la cobertura pública, el porcentaje reconocido y la trazabilidad de cada decisión. Cada orden trae fecha, medio emisor, entidad emisora, valor del procedimiento y una glosa semiestructurada con el nombre, el identificador DNO y el seguro social del paciente, su edad, su perfil, el servicio solicitado y la medicación. La decisión depende de dos catálogos: 20 servicios cubiertos y tres perfiles (prioritario, 100\,\%; estándar, 50\,\%; copago, 25\,\%); si el servicio no está en el catálogo, la orden no se cubre.
+
+Cada decisión es determinista; la dificultad está en tomarla a escala y con garantías. Procesar 12 millones de órdenes en 24 horas exige al menos 139 órdenes por segundo sostenidas; cada decisión debe poder auditarse, los datos personales no deben llegar a los resultados y el costo debe ser razonable para un presupuesto público.
+
+\textbf{Pregunta de investigación.} ¿Puede una arquitectura por lotes, distribuida y serverless en AWS clasificar 12 millones de órdenes en menos de 24 horas, con trazabilidad individual, seudonimización de los pacientes y un costo cuantificable y razonable?
+
+\section{Objetivos}
+\textbf{General.} Diseñar, implementar y evaluar en AWS una solución por lotes, distribuida y serverless que clasifique la cobertura de 12 millones de órdenes en menos de 24 horas, con trazabilidad individual, seudonimización y un costo de operación cuantificado.
+\textbf{Específicos.} (1) Caracterizar los datos y formalizar las reglas de cobertura. (2) Diseñar la arquitectura justificando cada componente frente a sus alternativas. (3) Implementar el prototipo con infraestructura como código y pruebas automatizadas. (4) Evaluar tiempo, rendimiento, exactitud y trazabilidad con 1,2 y 12 millones de órdenes. (5) Estimar el costo con precios oficiales y consumo medido.
+
+\section{Estado del arte}
+MapReduce reparte el cómputo entre máquinas mediante funciones \emph{map} y \emph{reduce} (Dean y Ghemawat, 2008), y Apache Spark lo generalizó con un motor unificado en memoria (Zaharia et~al., 2016). La arquitectura Lambda suma a la capa por lotes una de baja latencia (Marz y Warren, 2015), y la Kappa usa solo flujo continuo para no duplicar la lógica (Kreps, 2014); ambas atienden necesidades de baja latencia. Los lagos de datos con formatos columnares como Parquet permiten consultar los resultados leyendo solo las columnas necesarias (Armbrust et~al., 2021). En reclamaciones médicas se usa el aprendizaje automático sobre todo para detectar fraude (Herland et~al., 2018), pero el Reglamento (UE) 2024/1689 considera de alto riesgo la IA que decide el acceso a prestaciones públicas de salud (Parlamento Europeo y Consejo de la Unión Europea, 2024); con reglas explícitas, una decisión determinista que registra su regla es más explicable. Un hash simple de identificadores con formato conocido puede revertirse por fuerza bruta (AEPD y EDPS, 2019); HMAC lo impide con una clave secreta (Krawczyk et~al., 1997). Los componentes están maduros; faltan implementaciones abiertas que reporten de forma verificable tiempo, exactitud, trazabilidad y costo.
+
+\section{Ruta elegida: procesamiento por lotes}
+Se eligió la opción 1, procesamiento por lotes, y no la ingesta continua e híbrida, por cuatro razones. (1) El reto fija una ventana de 24 horas y no pide respuesta inmediata por orden, así que la baja latencia no aporta a la meta. (2) Cada orden se decide de forma independiente, y una sola capa evita mantener la lógica en dos sistemas, la crítica de Kreps (2014) a la arquitectura Lambda. (3) Un servicio serverless cobra solo mientras procesa, sin ingesta encendida todo el día. (4) La trazabilidad se obtiene igual: cada decisión queda con el identificador de la ejecución y su marca de tiempo, consultable con SQL.
+
+\section{Arquitectura y método}
+Una plantilla de AWS CloudFormation crea todos los recursos de la Figura~\ref{fig:arq} y reutiliza el rol \texttt{LabRole}, porque el laboratorio no permite crear roles. Cada workflow lanza el mismo trabajo con un escenario: esqueleto (1\,000 órdenes), muestra dañada, conjunto completo (1,2 M) y réplica (12 M: el conjunto diez veces, con identificadores únicos). Un quinto workflow, creado desactivado, programa la operación diaria.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+  font=\scriptsize,
+  b/.style={draw,rounded corners=2pt,align=center,inner sep=2.5pt,minimum height=0.7cm,fill=#1},
+  b/.default=white,
+  a/.style={-{Stealth[length=4pt]},thick},
+  node distance=0.3cm and 0.3cm]
+  \node[b=blue!8] (job) {\textbf{Trabajo de AWS Glue}\\Spark 3.5, Glue 5.1\\4 workers G.1X};
+  \node[b, left=of job] (raw) {S3 \texttt{raw/}\\órdenes CSV\\y catálogos};
+  \node[b, right=of job] (sec) {Secrets\\Manager\\(clave HMAC)};
+  \node[b, above=of job] (wf) {Glue Workflows\\(4 escenarios + diario)};
+  \node[b=green!8, below left=0.4cm and -0.6cm of job] (cur) {S3 \texttt{curated/}\\Parquet, partición\\por ejecución y fecha};
+  \node[b=orange!10, below right=0.4cm and -0.6cm of job] (qua) {S3 \texttt{quarantine/}\\registros inválidos\\y su motivo};
+  \node[b, below=1.7cm of job] (cat) {Glue Data Catalog};
+  \node[b, right=of cat] (ath) {Amazon\\Athena};
+  \node[b, left=of wf] (cw) {CloudWatch\\(\texttt{METRICAS})};
+  \draw[a] (wf) -- (job);
+  \draw[a] (raw) -- (job);
+  \draw[a] (sec) -- (job);
+  \draw[a] (job) -- (cur);
+  \draw[a] (job) -- (qua);
+  \draw[a] (cur) -- (cat);
+  \draw[a] (qua) -- (cat);
+  \draw[a] (cat) -- (ath);
+  \draw[a,dashed] (job.north west) -- (cw.south east);
+  \node[draw,dashed,gray,rounded corners=3pt,inner sep=4pt,fit=(wf)(raw)(sec)(cw)(ath),
+        label={[gray,font=\scriptsize]below:Aprovisionado con AWS CloudFormation}] {};
+\end{tikzpicture}
+\caption{Arquitectura por lotes de la solución.}
+\label{fig:arq}
+\end{figure}
+
+El trabajo corre en AWS Glue 5.1, con Spark 3.5.6 y Python 3.11 (AWS, s.f.-c). Spark reparte las órdenes entre los workers y, en cada partición, aplica una lógica en Python puro, la misma que se prueba en local. Si el servicio está en el catálogo, asigna \texttt{cubre = SI}, el porcentaje del perfil y \(\textit{valor cubierto} = \textit{valor} \times \textit{porcentaje}/100\) (regla \texttt{RG-01}); si no, \texttt{cubre = NO} y 0\,\% (\texttt{RG-00}). El paciente se identifica con HMAC-SHA-256 de su DNO y seguro social. Las glosas mal formadas y los perfiles fuera de catálogo van a cuarentena con su motivo, sin detener el proceso, y antes de escribir el trabajo verifica que entradas = resultados + cuarentena. Cada resultado tiene 14 columnas, entre ellas la regla aplicada, el identificador de la ejecución y la marca de tiempo; ninguna contiene nombre, DNO ni seguro social.
+
+El método es aplicado y cuantitativo, bajo la ciencia del diseño (Hevner et~al., 2004) y las seis actividades de Peffers et~al. (2007), con tres hipótesis: H1, 12 millones en menos de 24 horas; H2, coincidencia del 100\,\% con la referencia; H3, cada orden aparece una sola vez en resultados o en cuarentena. Se avanzó de forma incremental desde un esqueleto de extremo a extremo (Cockburn, 2004). La referencia proviene de un perfilado independiente: 1\,200\,000 órdenes sin duplicados en tres fechas; perfiles estándar (480\,255), prioritario (419\,653) y copago (300\,092); 780\,000 con servicio cubierto, 420\,000 con alguno de 12 no cubiertos y ninguna glosa inválida. Por eso se construyó una muestra dañada de 34 órdenes: 20 válidas y 14 casos de error o formato irregular.
+
+\section{Resultados frente a las cifras objetivo}
+La Tabla~\ref{tab:res} contrasta cada indicador con su cifra objetivo. El costo se modela como \(C = C_{\mathit{Glue}} + C_{\mathit{S3}} + C_{\mathit{Athena}} + C_{\mathit{CloudWatch}} + C_{\mathit{Secrets}}\), con \(C_{\mathit{Glue}} = W \times D \times t \times p\): \(W\) workers, \(D\) DPU por worker (1 en G.1X), \(t\) horas facturadas por segundo y \(p\) = 0,44 USD por DPU-hora (AWS, s.f.-a). Athena cobra 5 USD por terabyte escaneado, volumen que Parquet reduce (AWS, s.f.-b), y el secreto cuesta 0,40 USD al mes (AWS, s.f.-d). Con el consumo medido, la ejecución de 12 millones costó \pend{USD}, y 30 ejecuciones diarias costarían \pend{USD} al mes.
+
+\section{Conclusiones}
+La ruta por lotes con AWS Glue responde la pregunta de investigación con una arquitectura sencilla y reproducible desde una plantilla. La exactitud (H2) y la trazabilidad (H3) quedaron demostradas sobre las 1,2 millones de órdenes, y HMAC impide recalcular la identidad del paciente sin la clave. Con 12 millones, el tiempo total fue de \pend{s}, lo que \pend{cumple / no cumple} la ventana de 24 horas (H1), con un costo de \pend{USD} por ejecución. Las limitaciones son los datos sintéticos, cuya réplica conserva la distribución; una sola ejecución por escenario, y un rol de laboratorio con permisos amplios, que no permite restringir el acceso a la clave como en producción.
+
+\smallskip
+\noindent{\footnotesize\textbf{Uso de inteligencia artificial.} Se usó un modelo de lenguaje (Claude, de Anthropic) como asistente en el diseño, el código y la redacción. Las referencias, las decisiones y la validación de resultados son responsabilidad de los autores.}
+
+\section*{Referencias}
+{\scriptsize\raggedright\setlength{\parindent}{0pt}\setlength{\parskip}{0.5pt}
+\everypar{\hangindent=1em\hangafter=1}
+
+Agencia Española de Protección de Datos y European Data Protection Supervisor. (2019). \emph{Introduction to the hash function as a personal data pseudonymisation technique}. https://edps.europa.eu/sites/edp/files/publication/19-10-30\_aepd-edps\_paper\_hash\_final\_en.pdf
+
+Amazon Web Services. (s.f.-a). \emph{AWS Glue pricing}. https://aws.amazon.com/glue/pricing/
+
+Amazon Web Services. (s.f.-b). \emph{Amazon Athena pricing}. https://aws.amazon.com/athena/pricing/
+
+Amazon Web Services. (s.f.-c). \emph{AWS Glue versions}. https://docs.aws.amazon.com/glue/latest/dg/release-notes.html
+
+Amazon Web Services. (s.f.-d). \emph{AWS Secrets Manager pricing}. https://aws.amazon.com/secrets-manager/pricing/
+
+Armbrust, M., Ghodsi, A., Xin, R. y Zaharia, M. (2021). Lakehouse: A new generation of open platforms that unify data warehousing and advanced analytics. En \emph{CIDR '21}.
+
+Cockburn, A. (2004). \emph{Crystal clear: A human-powered methodology for small teams}. Addison-Wesley.
+
+Dean, J. y Ghemawat, S. (2008). MapReduce: Simplified data processing on large clusters. \emph{Communications of the ACM, 51}(1), 107--113. https://doi.org/10.1145/1327452.1327492
+
+Herland, M., Khoshgoftaar, T. M. y Bauder, R. A. (2018). Big Data fraud detection using multiple Medicare data sources. \emph{Journal of Big Data, 5}. https://doi.org/10.1186/s40537-018-0138-3
+
+Hevner, A. R., March, S. T., Park, J. y Ram, S. (2004). Design science in information systems research. \emph{MIS Quarterly, 28}(1), 75--105. https://doi.org/10.2307/25148625
+
+Krawczyk, H., Bellare, M. y Canetti, R. (1997). \emph{HMAC: Keyed-hashing for message authentication} (RFC 2104). IETF. https://www.rfc-editor.org/rfc/rfc2104
+
+Kreps, J. (2014, 2 de julio). Questioning the Lambda architecture. \emph{O'Reilly Radar}.
+
+Marz, N. y Warren, J. (2015). \emph{Big data: Principles and best practices of scalable realtime data systems}. Manning.
+
+Parlamento Europeo y Consejo de la Unión Europea. (2024). \emph{Reglamento (UE) 2024/1689 [...] en materia de inteligencia artificial}. Diario Oficial de la Unión Europea.
+
+Peffers, K., Tuunanen, T., Rothenberger, M. A. y Chatterjee, S. (2007). A design science research methodology for information systems research. \emph{Journal of Management Information Systems, 24}(3), 45--77. https://doi.org/10.2753/MIS0742-1222240302
+
+Zaharia, M., Xin, R. S., Wendell, P., Das, T., Armbrust, M., Dave, A. et~al. (2016). Apache Spark: A unified engine for big data processing. \emph{Communications of the ACM, 59}(11), 56--65. https://doi.org/10.1145/2934664
+
+}
+
+\end{document}
