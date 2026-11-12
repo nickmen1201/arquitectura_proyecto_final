@@ -127,18 +127,25 @@ Todos viven en un único archivo, `src/job_cobertura.py`, para que el despliegue
 
 - Spark reparte las filas entre los workers; el procesamiento por fila no depende de las demás filas (salvo la lectura de los catálogos, que se distribuyen a todos). El costo crece de forma aproximadamente lineal con el volumen, y el tiempo baja al agregar workers.
 - 12 M en 24 h equivale a unas 139 órdenes por segundo de rendimiento mínimo requerido.
-- **Evidencia a recoger:** workers usados, tiempo de procesamiento (`duration_seconds` de la línea `METRICAS`) y tiempo total de la ejecución en la consola de Glue (incluye el arranque), para 1,2 M y para 12 M. Con eso se calculan órdenes por segundo por worker y cuántos workers harían falta para otros volúmenes.
+- **Medición (11-11-2026), 4 workers G.1X (paralelismo de Spark 12, 24 particiones):** tiempo de procesamiento = `duration_seconds` de la línea `METRICAS` (desde que arranca el script hasta antes de escribir la métrica); tiempo total = fin − inicio en la consola de Glue (añade el aprovisionamiento de workers). El tiempo total es la medida conservadora para H1. Evidencia: `ss/metricas.txt` y la captura de **Runs**.
 
-| Ejecución | Registros | Workers (G.1X) | Procesamiento (s) | Tiempo total en consola (s) | Órdenes/s (sobre tiempo total) |
+| Ejecución | Registros | Procesamiento (s) | Tiempo total en consola (s) | Órdenes/s (procesamiento) | Órdenes/s (tiempo total) |
 |---|---|---|---|---|---|
-| 1,2 M | 1 200 000 | _pendiente_ | _pendiente_ | _pendiente_ | _pendiente_ |
-| 12 M | 12 000 000 | _pendiente_ | _pendiente_ | _pendiente_ | _pendiente_ |
+| Esqueleto | 1 000 | 63,0 | 145 | — | — |
+| Muestra dañada | 34 | 88,1 | 143 | — | — |
+| 1,2 M | 1 200 000 | 80,3 | 153 | 14 944 | 7 843 |
+| 12 M | 12 000 000 | 225,5 | 274 | 53 215 | 43 796 |
+
+- **H1 se cumple con amplio margen:** 12 M tardaron 274 s en total, el 0,32 % de la ventana de 86 400 s; el rendimiento sobre el tiempo total (43 796 órdenes/s) es unas 315 veces el mínimo requerido (139 órdenes/s).
+- **Los costos fijos dominan en volúmenes pequeños.** Cada ejecución paga dos costos fijos: el aprovisionamiento de Glue (total − procesamiento: entre 49 y 82 s) y el arranque del script (iniciar Spark, leer clave y catálogos, planificar y escribir): 1 000 órdenes ya tardan 63 s de procesamiento. Por eso 1,2 M tardan casi lo mismo que la muestra de 1 000.
+- **Rendimiento marginal:** pasar de 1,2 M a 12 M añadió 145,2 s de procesamiento para 10,8 M órdenes más, unas 74 000 órdenes/s con 4 workers. Diez veces más datos costaron 2,8 veces más tiempo de procesamiento: el crecimiento es sublineal en este rango, porque los costos fijos se reparten entre más órdenes.
+- **Holgura para crecer:** aun suponiendo crecimiento lineal desde aquí, la ventana de 24 h admite volúmenes muy superiores a 12 M con 4 workers; la restricción práctica es el costo por DPU-hora, no el tiempo.
 
 ## 6. Costo
 
-Mismo modelo que la propuesta (entregable 01): `C = C_Glue + C_S3 + C_Athena + C_CloudWatch + C_Secrets`, con `C_Glue = workers × DPU por worker (1 en G.1X) × horas facturadas × precio DPU-hora`. Las cifras se completan con la AWS Pricing Calculator (región del laboratorio) y con el consumo medido. **No se inventan.**
+Mismo modelo que la propuesta (entregable 01): `C = C_Glue + C_S3 + C_Athena + C_CloudWatch + C_Secrets`, con `C_Glue = workers × DPU por worker (1 en G.1X) × horas facturadas × precio DPU-hora`. Las cifras salen de los precios oficiales de AWS para us-east-1 (región del laboratorio) y del consumo medido. **No se inventan.**
 
-Precios unitarios de referencia (consultados el 10-11-2026; confirmar en la Pricing Calculator para la región):
+Precios unitarios (us-east-1; páginas de precios consultadas el 10-11-2026 y lista oficial de precios de AWS, *Price List API*, publicada el 09-11-2026 para S3 y el 04-11-2026 para CloudWatch, consultada el 11-11-2026):
 
 | Componente | Unidad | Precio (USD) | Fuente |
 |---|---|---|---|
@@ -146,17 +153,43 @@ Precios unitarios de referencia (consultados el 10-11-2026; confirmar en la Pric
 | Athena | TB escaneado | 5,00 | [Amazon Athena pricing](https://aws.amazon.com/athena/pricing/) |
 | Glue Data Catalog | objetos y accesos | gratis hasta 1 millón de cada uno | [AWS Glue pricing](https://aws.amazon.com/glue/pricing/) |
 | Secrets Manager | secreto al mes; 10 000 llamadas | 0,40; 0,05 | [AWS Secrets Manager pricing](https://aws.amazon.com/secrets-manager/pricing/) |
-| S3 almacenamiento / solicitudes, CloudWatch Logs | GB-mes / 1 000 solicitudes / GB ingerido | _pendiente_ | Pricing Calculator |
+| S3 Standard, almacenamiento | GB-mes (primeros 50 TB) | 0,023 | [AWS Price List API, AmazonS3](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/current/us-east-1/index.json) |
+| S3, solicitudes | 1 000 PUT/COPY/POST/LIST; 1 000 GET | 0,005; 0,0004 | [AWS Price List API, AmazonS3](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/current/us-east-1/index.json) |
+| CloudWatch Logs (clase estándar) | GB ingerido; GB-mes almacenado | 0,50; 0,03 | [AWS Price List API, AmazonCloudWatch](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonCloudWatch/current/us-east-1/index.json) |
 
-Costo con consumo medido:
+Consumo medido el 11-11-2026 (CloudShell: `aws s3 ls --summarize` y la métrica `IncomingBytes` de CloudWatch por minuto):
+
+| Medida | 1,2 M | 12 M |
+|---|---|---|
+| Tiempo total facturable (s) | 153 | 274 |
+| Resultados en S3 (Parquet, 72 archivos) | 0,104 GiB | 1,021 GiB |
+| Entrada CSV | 0,336 GiB | 3,36 GiB (en el laboratorio se replica en memoria; en producción sería un archivo real) |
+| Registros ingeridos en CloudWatch | 0,74 MB | 0,78 MB |
+
+Parquet ocupa el 30 % del CSV equivalente (1,02 frente a 3,36 GiB para 12 M).
+
+Costo (USD, us-east-1):
 
 | Concepto | 1,2 M | 12 M | Mes (30 ejecuciones de 12 M) |
 |---|---|---|---|
-| DPU-hora (workers × horas facturadas) | _medido_ | _medido_ | _calculado_ |
-| Costo Glue | _calculado_ | _calculado_ | _calculado_ |
-| Costo S3 + Athena + CloudWatch + Secrets Manager | _calculado_ | _calculado_ | _calculado_ |
-| **Costo total** | _calculado_ | _calculado_ | _calculado_ |
-| **Costo por orden** | _calculado_ | _calculado_ | _calculado_ |
+| DPU-hora (workers × horas facturadas) | 0,170 (4 × 153 s) | 0,304 (4 × 274 s) | 9,13 |
+| Costo Glue (× 0,44 USD) | 0,075 | 0,134 | 4,02 |
+| S3, almacenamiento de entrada y resultados durante un mes | 0,010 | 0,101 | 3,02 |
+| S3, solicitudes (estimado) | 0,003 | 0,003 | 0,09 |
+| Athena (cota: una consulta que lee toda la partición) | 0,001 | 0,005 | 0,15 |
+| CloudWatch Logs | 0,0003 | 0,0004 | 0,01 |
+| Secrets Manager (0,40 al mes; por ejecución, prorrateado entre 30) | 0,013 | 0,013 | 0,40 |
+| Costo S3 + Athena + CloudWatch + Secrets Manager | 0,027 | 0,122 | 3,67 |
+| **Costo total** | **0,10** | **0,26** | **7,69** |
+| **Costo por millón de órdenes** | 0,085 | 0,021 | 0,021 |
+
+Supuestos y lecturas:
+
+- **Glue** se calcula con el tiempo total de la consola, que incluye el aprovisionamiento; Glue factura solo el tiempo de ejecución, así que es una cota superior. Es el 52 % del costo mensual.
+- **S3 almacenamiento** supone que cada día se conservan la entrada y los resultados durante 30 días (131 GiB en régimen). Es el segundo componente (39 %). Una regla de ciclo de vida que borre o archive el CSV una vez procesado lo reduce a 0,70 USD al mes (solo resultados, 31 GiB).
+- **S3 solicitudes** es una estimación (se midieron 72 archivos de salida; se suponen unas 500 escrituras y hasta 1 000 lecturas por ejecución); las métricas de solicitudes de S3 no vienen activadas.
+- **Athena** cobra por datos escaneados; la cota supone una consulta diaria que lee toda la partición. Con Parquet, una consulta como la de exactitud lee solo la columna `cubre`, así que el costo real es menor.
+- **Costo por orden:** 12 M cuestan unos 0,26 USD, unos 2 centavos de dólar por millón de órdenes. El costo por orden de 1,2 M es cuatro veces mayor porque los costos fijos (arranque y secreto) se reparten entre menos órdenes.
 
 Más workers reducen el tiempo pero no necesariamente el costo (depende de workers × tiempo); las dos ejecuciones medidas permiten elegir la configuración más barata que cumple la ventana de 24 h.
 

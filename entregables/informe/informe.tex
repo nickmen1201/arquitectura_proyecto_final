@@ -57,14 +57,14 @@
 \toprule
 \textbf{Indicador} & \textbf{Cifra objetivo} & \textbf{Verificación local} & \textbf{Ejecución en AWS} \\
 \midrule
-Tiempo total, 12 M (H1) & \(<\) 86\,400 s (24 h) & No aplica & \pend{s} con \pend{W} workers G.1X \\
-Rendimiento & \(\geq\) 139 órdenes/s & 38\,521 órdenes/s (1,2 M en 31,2 s) & 1,2 M: \pend{órdenes/s}; 12 M: \pend{órdenes/s} \\
-Exactitud (H2) & 1,2 M: 780\,000 SI y 420\,000 NO; 12 M: 7\,800\,000 SI y 4\,200\,000 NO & 1,2 M: 780\,000 SI y 420\,000 NO (100\,\%) & 1,2 M: \pend{SI}, \pend{NO}; 12 M: \pend{SI}, \pend{NO} \\
-Trazabilidad (H3) & Entradas = resultados + cuarentena & 1\,200\,000 = 1\,200\,000 + 0 & 12 M: \pend{entradas} = \pend{resultados} + \pend{cuarentena} \\
-Muestra dañada (34 órdenes) & 22 resultados; 12 en cuarentena (10 de formato, 2 de perfil) & 22; 12 (10 y 2) & \pend{resultados}; \pend{cuarentena} \\
-Privacidad & 0 columnas con datos personales; clave fuera del código & 0 de 14 columnas; ninguna clave real en el código ni en la plantilla & Valor del secreto ausente de plantilla y registros: \pend{sí/no} \\
+Tiempo total, 12 M (H1) & \(<\) 86\,400 s (24 h) & No aplica & 274 s con 4 workers G.1X \\
+Rendimiento & \(\geq\) 139 órdenes/s & 38\,521 órdenes/s (1,2 M en 31,2 s) & 1,2 M: 7\,843 órdenes/s; 12 M: 43\,796 órdenes/s \\
+Exactitud (H2) & 1,2 M: 780\,000 SI y 420\,000 NO; 12 M: 7\,800\,000 SI y 4\,200\,000 NO & 1,2 M: 780\,000 SI y 420\,000 NO (100\,\%) & 100\,\% en 1,2 M y en 12 M \\
+Trazabilidad (H3) & Entradas = resultados + cuarentena & 1\,200\,000 = 1\,200\,000 + 0 & 12 M: 12\,000\,000 = 12\,000\,000 + 0 \\
+Muestra dañada (34 órdenes) & 22 resultados; 12 en cuarentena (10 de formato, 2 de perfil) & 22; 12 (10 y 2) & 22; 12 (10 y 2) \\
+Privacidad & 0 columnas con datos personales; clave fuera del código & 0 de 14 columnas; ninguna clave real en el código ni en la plantilla & 0 de 14 columnas; la clave no se registra \\
 Calidad del software & Cobertura de pruebas \(\geq\) 80\,\% & 99,60\,\% (93 pruebas) & No aplica \\
-Costo, ejecución de 12 M & Reportado con la fuente de cada precio & No aplica & \pend{USD}; \pend{USD} por orden \\
+Costo, ejecución de 12 M & Reportado con la fuente de cada precio & No aplica & 0,26 USD; 0,021 USD por millón de órdenes \\
 \bottomrule
 \end{tabularx}
 \end{table*}
@@ -127,10 +127,10 @@ El trabajo corre en AWS Glue 5.1, con Spark 3.5.6 y Python 3.11 (AWS, s.f.-c). S
 El método es aplicado y cuantitativo, bajo la ciencia del diseño (Hevner et~al., 2004) y las seis actividades de Peffers et~al. (2007), con tres hipótesis: H1, 12 millones en menos de 24 horas; H2, coincidencia del 100\,\% con la referencia; H3, cada orden aparece una sola vez en resultados o en cuarentena. Se avanzó de forma incremental desde un esqueleto de extremo a extremo (Cockburn, 2004). La referencia proviene de un perfilado independiente: 1\,200\,000 órdenes sin duplicados en tres fechas; perfiles estándar (480\,255), prioritario (419\,653) y copago (300\,092); 780\,000 con servicio cubierto, 420\,000 con alguno de 12 no cubiertos y ninguna glosa inválida. Por eso se construyó una muestra dañada de 34 órdenes: 20 válidas y 14 casos de error o formato irregular.
 
 \section{Resultados frente a las cifras objetivo}
-La Tabla~\ref{tab:res} contrasta cada indicador con su cifra objetivo. El costo se modela como \(C = C_{\mathit{Glue}} + C_{\mathit{S3}} + C_{\mathit{Athena}} + C_{\mathit{CloudWatch}} + C_{\mathit{Secrets}}\), con \(C_{\mathit{Glue}} = W \times D \times t \times p\): \(W\) workers, \(D\) DPU por worker (1 en G.1X), \(t\) horas facturadas por segundo y \(p\) = 0,44 USD por DPU-hora (AWS, s.f.-a). Athena cobra 5 USD por terabyte escaneado, volumen que Parquet reduce (AWS, s.f.-b), y el secreto cuesta 0,40 USD al mes (AWS, s.f.-d). Con el consumo medido, la ejecución de 12 millones costó \pend{USD}, y 30 ejecuciones diarias costarían \pend{USD} al mes.
+La Tabla~\ref{tab:res} contrasta cada indicador con su cifra objetivo. El costo se modela como \(C = C_{\mathit{Glue}} + C_{\mathit{S3}} + C_{\mathit{Athena}} + C_{\mathit{CloudWatch}} + C_{\mathit{Secrets}}\), con \(C_{\mathit{Glue}} = W \times D \times t \times p\): \(W\) workers, \(D\) DPU por worker (1 en G.1X), \(t\) horas facturadas por segundo y \(p\) = 0,44 USD por DPU-hora (AWS, s.f.-a). Athena cobra 5 USD por terabyte escaneado, volumen que Parquet reduce (AWS, s.f.-b); el secreto, 0,40 USD al mes (AWS, s.f.-d), y S3, 0,023 USD por GB-mes (AWS, s.f.-e). Con el consumo medido, 12 millones costaron unos 0,26 USD (0,13 de Glue) y 30 ejecuciones diarias costarían unos 7,69 USD al mes.
 
 \section{Conclusiones}
-La ruta por lotes con AWS Glue responde la pregunta de investigación con una arquitectura sencilla y reproducible desde una plantilla. La exactitud (H2) y la trazabilidad (H3) quedaron demostradas sobre las 1,2 millones de órdenes, y HMAC impide recalcular la identidad del paciente sin la clave. Con 12 millones, el tiempo total fue de \pend{s}, lo que \pend{cumple / no cumple} la ventana de 24 horas (H1), con un costo de \pend{USD} por ejecución. Las limitaciones son los datos sintéticos, cuya réplica conserva la distribución; una sola ejecución por escenario, y un rol de laboratorio con permisos amplios, que no permite restringir el acceso a la clave como en producción.
+La ruta por lotes con AWS Glue responde la pregunta de investigación con una arquitectura sencilla y reproducible desde una plantilla. La exactitud (H2) y la trazabilidad (H3) quedaron demostradas sobre las 1,2 millones de órdenes, y HMAC impide recalcular la identidad del paciente sin la clave. Con 12 millones, el tiempo total fue de 274 s con 4 workers, lo que cumple holgadamente la ventana de 24 horas (H1), con un costo de unos 0,26 USD por ejecución. Las limitaciones son los datos sintéticos, cuya réplica conserva la distribución; una sola ejecución por escenario, y un rol de laboratorio con permisos amplios, que no permite restringir el acceso a la clave como en producción.
 
 \smallskip
 \noindent{\footnotesize\textbf{Uso de inteligencia artificial.} Se usó un modelo de lenguaje (Claude, de Anthropic) como asistente en el diseño, el código y la redacción. Las referencias, las decisiones y la validación de resultados son responsabilidad de los autores.}
@@ -148,6 +148,8 @@ Amazon Web Services. (s.f.-b). \emph{Amazon Athena pricing}. https://aws.amazon.
 Amazon Web Services. (s.f.-c). \emph{AWS Glue versions}. https://docs.aws.amazon.com/glue/latest/dg/release-notes.html
 
 Amazon Web Services. (s.f.-d). \emph{AWS Secrets Manager pricing}. https://aws.amazon.com/secrets-manager/pricing/
+
+Amazon Web Services. (s.f.-e). \emph{AWS Price List: AmazonS3 y AmazonCloudWatch, us-east-1}. https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/index.json
 
 Armbrust, M., Ghodsi, A., Xin, R. y Zaharia, M. (2021). Lakehouse: A new generation of open platforms that unify data warehousing and advanced analytics. En \emph{CIDR '21}.
 

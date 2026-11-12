@@ -61,7 +61,7 @@ Como el dataset real no trae errores, la cuarentena se demuestra con un **archiv
 | **NFR3** Idempotencia | Dos ejecuciones con la misma entrada (y la misma clave de seudonimización) producen las mismas decisiones y los mismos `paciente_hash`; solo cambian `run_id` y `timestamp_proceso`. Repetir un escenario reemplaza solo su partición `ejecucion`. |
 | **NFR4** Observabilidad | Al terminar, el job escribe en CloudWatch una línea `METRICAS {json}` con `run_id`, `ejecucion`, `records_input`, `records_output`, `records_cubre_si`, `records_cubre_no`, `records_quarantined_parseo`, `records_quarantined_perfil`, `duration_seconds`, `factor_replicacion`, `paralelismo`, `particiones` (detalle en [contratos.md](contratos.md#5-línea-de-métricas-en-cloudwatch)). Los workers usados se leen en la configuración del job. |
 | **NFR5** Seguridad | Sin credenciales, claves, ARNs ni nombres de bucket en el código o la plantilla; todo llega por parámetros, y la clave de seudonimización la genera AWS Secrets Manager (nadie la escribe). Se usa el `LabRole` del laboratorio. Bucket con cifrado SSE-S3 y acceso público bloqueado. |
-| **NFR6** Costo | Servicios con pago por uso (Glue, S3, Athena, CloudWatch) más un secreto en Secrets Manager (costo fijo mensual pequeño); nada de cómputo queda encendido entre ejecuciones. Las cifras de costo se toman de la AWS Pricing Calculator o de la consola del laboratorio; **nunca se inventan**. |
+| **NFR6** Costo | Servicios con pago por uso (Glue, S3, Athena, CloudWatch) más un secreto en Secrets Manager (costo fijo mensual pequeño); nada de cómputo queda encendido entre ejecuciones. Las cifras de costo se toman de los precios oficiales de AWS (páginas de precios, *Price List API* o Pricing Calculator) y del consumo medido en el laboratorio; **nunca se inventan**. |
 
 ## 5. Historias de usuario
 
@@ -78,7 +78,7 @@ Actores: **Operador** (despliega y ejecuta), **Analista** (revisa resultados), *
 | **US3.3** | Como Analista, quiero consultar con Athena por qué se decidió una orden. | `SELECT ... WHERE id_solicitud = 'CHV-0000004'` devuelve la decisión, la regla, el `run_id` y la hora de proceso. |
 | **US4.1** | Como Operador, quiero demostrar que 12 M de órdenes se procesan en menos de 24 h. | Ejecución real con `factor_replicacion = 10`: `records_input = 12000000` y tiempo total en la consola de Glue < 86 400 s; el documento compara 1,2 M vs 12 M y los workers usados. |
 | **US5.1** | Como Comité, quiero un documento de diseño técnico con diagrama, justificación, lógica, escalado y costo. | Diagrama de servicios y flujo; Glue justificado frente a EMR, Lambda y Athena; tabla de costo con fuente de cada cifra. |
-| **US5.2** | Como Comité, quiero código, pruebas y evidencia de ejecución. | Pruebas de clasificación, cuarentena, HMAC (incluido que la misma entrada con otra clave da otro hash) y lectura del secreto, con ≥ 80 % de cobertura de la lógica; capturas de Glue, CloudWatch, S3 y Athena; ninguna credencial ni clave en el repositorio. |
+| **US5.2** | Como Comité, quiero código, pruebas y evidencia de ejecución. | Pruebas de clasificación, cuarentena, HMAC (incluido que la misma entrada con otra clave da otro hash) y lectura del secreto, con ≥ 80 % de cobertura de la lógica; evidencia de ejecución: captura del stack de CloudFormation, captura de las ejecuciones del job en Glue, líneas `METRICAS` de CloudWatch en texto, capturas de las consultas de exactitud y trazabilidad en Athena y precios con su fuente oficial; ninguna credencial ni clave en el repositorio. |
 
 ## 6. Fuera de alcance
 
